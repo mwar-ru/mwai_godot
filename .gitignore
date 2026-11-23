@@ -1,0 +1,29 @@
+# Кэш Godot и учётные данные экспорта
+.godot/
+.import/
+export_credentials.cfg
+*.translation
+
+# Ключи подписи Android (НИКОГДА не заливать!)
+signing/
+*.keystore
+*.jks
+
+# Тяжёлые бинарники и кэш Android-шаблона (если перенесёшь папку android/ в корень)
+android/libs/
+android/build/
+android/.gradle/
+*.aar
+*.jar
+
+# Готовые билды
+builds/
+export/
+*.exe
+*.pck
+*.apk
+*.aab
+*.zip
+
+# Временные файлы редакторов
+*.sublime-workspace
