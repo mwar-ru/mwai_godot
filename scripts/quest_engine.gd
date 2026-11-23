@@ -272,7 +272,7 @@ func apply_turn_result(turn_data: Dictionary) -> Dictionary:
 	var stat_changes = turn_data.get("stat_changes", {})
 	if stat_changes is Dictionary:
 		for k in stat_changes:
-			if stats.has(k) and stats[k] is int:
+			if stats.has(k) and (stats[k] is int or stats[k] is float):
 				stats[k] += int(stat_changes[k])
 			else:
 				stats[k] = stat_changes[k]

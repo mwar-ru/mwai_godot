@@ -298,7 +298,8 @@ func _on_session_data_loaded(json: Dictionary) -> void:
 	api.base_url = cfg.get("address", api.base_url)
 	api.provider = cfg.get("provider", api.provider)
 	api.auth_type = cfg.get("authType", api.auth_type)
-	api.auth_token = cfg.get("token", api.auth_token)
+	if str(cfg.get("token", "")).strip_edges() != "":
+		api.auth_token = cfg["token"]
 	api.model_name = cfg.get("model", api.model_name)
 
 	if json.has("mode"): set_mode(json["mode"])
@@ -425,7 +426,8 @@ func _on_stream_finished(narrative: String, thinking: String, stats_data: Dictio
 	# Если ответ предназначался для генератора мини-игр песочницы
 	if sandbox_manager and sandbox_manager.is_generating_game:
 		sandbox_manager.on_stream_completed(narrative, thinking, stats_data)
-		set_ui_locked(false)
+		if not sandbox_manager.is_generating_game:
+		    set_ui_locked(false)
 		update_smartbar_ui()
 		return
 

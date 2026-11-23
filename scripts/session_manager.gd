@@ -122,7 +122,7 @@ func export_session(current_mode: String, active_log: Array, quest: QuestEngine,
 			"address": api.base_url,
 			"provider": api.provider,
 			"authType": api.auth_type,
-			"token": api.auth_token,
+			"token": "",
 			"model": api.model_name
 		},
 		"mode": current_mode,

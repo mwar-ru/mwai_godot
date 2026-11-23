@@ -55,6 +55,14 @@ func _parse_url(url: String) -> Dictionary:
 		port = 11434
 	return {"is_ssl": is_ssl, "host": host, "port": port, "path_prefix": path_prefix}
 
+func _get_tls_options(u: Dictionary) -> TLSOptions:
+	if not u.is_ssl:
+		return null
+	var h = u.host.to_lower()
+	if h == "localhost" or h == "127.0.0.1" or h.begins_with("192.168.") or h.begins_with("10.") or h.begins_with("172.") or h.ends_with(".local"):
+		return TLSOptions.client_unsafe()
+	return TLSOptions.client()
+
 func _get_headers(active_provider: String) -> PackedStringArray:
 	var h: Array[String] = [
 		"Content-Type: application/json", "Accept: application/json",
@@ -159,7 +167,7 @@ func send_chat(messages: Array, tree: SceneTree, is_game: bool = false) -> void:
 	var active_prov = detect_provider()
 	var u = _parse_url(base_url)
 	var client = HTTPClient.new()
-	var err = client.connect_to_host(u.host, u.port, TLSOptions.client_unsafe() if u.is_ssl else null)
+	var err = client.connect_to_host(u.host, u.port, _get_tls_options(u))
 	if err != OK:
 		stream_error.emit("Ошибка подключения к %s:%d (код %d)" % [u.host, u.port, err])
 		client.close()
@@ -296,11 +304,13 @@ func send_chat(messages: Array, tree: SceneTree, is_game: bool = false) -> void:
 	}
 	var raw_stream = ""
 	var buffer = ""
+	var last_chunk_time = Time.get_ticks_msec()
 
 	while client.get_status() == HTTPClient.STATUS_BODY:
 		client.poll()
 		var chunk = client.read_response_body_chunk()
 		if chunk.size() > 0:
+			last_chunk_time = Time.get_ticks_msec()
 			var chunk_str = chunk.get_string_from_utf8()
 			raw_stream += chunk_str
 			buffer += chunk_str
@@ -336,6 +346,11 @@ func send_chat(messages: Array, tree: SceneTree, is_game: bool = false) -> void:
 		else:
 			var ans_txt = "✍️ Печатает..." if not is_game else "✍️ Формирование сцены..."
 			stream_status_changed.emit(ans_txt, elapsed, total_cur)
+
+		if (Time.get_ticks_msec() - last_chunk_time) / 1000.0 > REQUEST_TIMEOUT_SEC:
+			stream_error.emit("Таймаут ожидания потока данных (%.0fs)" % REQUEST_TIMEOUT_SEC)
+			client.close()
+			return
 		await tree.process_frame
 
 	client.close()
@@ -410,7 +425,7 @@ func send_chat_background_stream(messages: Array, tree: SceneTree, on_progress: 
 	var active_prov = detect_provider()
 	var u = _parse_url(base_url)
 	var client = HTTPClient.new()
-	var err = client.connect_to_host(u.host, u.port, TLSOptions.client_unsafe() if u.is_ssl else null)
+	var err = client.connect_to_host(u.host, u.port, _get_tls_options(u))
 	if err != OK: 
 		client.close()
 		return {"error": "Connection error"}
@@ -466,17 +481,33 @@ func send_chat_background_stream(messages: Array, tree: SceneTree, on_progress: 
 	while client.get_status() == HTTPClient.STATUS_REQUESTING:
 		client.poll()
 		var elapsed = (Time.get_ticks_msec() - start_time) / 1000.0
+		if elapsed > REQUEST_TIMEOUT_SEC:
+			client.close()
+			return {"error": "Request timeout"}
 		on_progress.call(elapsed, 0)
 		await tree.process_frame
+
+	var response_code = client.get_response_code()
+	if response_code >= 400:
+		var err_body = ""
+		while client.get_status() == HTTPClient.STATUS_BODY:
+			client.poll()
+			var err_chunk = client.read_response_body_chunk()
+			if err_chunk.size() > 0: err_body += err_chunk.get_string_from_utf8()
+			await tree.process_frame
+		client.close()
+		return {"error": "HTTP %d: %s" % [response_code, err_body.strip_edges()]}
 
 	var full_text = ""
 	var tokens = 0
 	var buffer = ""
+	var last_chunk_time = Time.get_ticks_msec()
 
 	while client.get_status() == HTTPClient.STATUS_BODY:
 		client.poll()
 		var chunk = client.read_response_body_chunk()
 		if chunk.size() > 0:
+			last_chunk_time = Time.get_ticks_msec()
 			var s = chunk.get_string_from_utf8()
 			buffer += s
 			var lines = buffer.split("\n")
@@ -497,6 +528,9 @@ func send_chat_background_stream(messages: Array, tree: SceneTree, on_progress: 
 						tokens += int(ceil(delta.length() / 3.0))
 
 		var elapsed = (Time.get_ticks_msec() - start_time) / 1000.0
+		if (Time.get_ticks_msec() - last_chunk_time) / 1000.0 > REQUEST_TIMEOUT_SEC:
+			client.close()
+			return {"error": "Stream timeout"}
 		on_progress.call(elapsed, tokens)
 		await tree.process_frame
 
@@ -519,7 +553,7 @@ func fetch_models(tree: SceneTree) -> Dictionary:
 	var active_prov = detect_provider()
 	var u = _parse_url(base_url)
 	var client = HTTPClient.new()
-	var err = client.connect_to_host(u.host, u.port, TLSOptions.client_unsafe() if u.is_ssl else null)
+	var err = client.connect_to_host(u.host, u.port, _get_tls_options(u))
 	if err != OK:
 		client.close()
 		return {"error": "Не удалось подключиться к %s:%d (код %d)" % [u.host, u.port, err]}
@@ -561,8 +595,12 @@ func fetch_models(tree: SceneTree) -> Dictionary:
 	for ep in endpoints_to_try:
 		err = client.request(HTTPClient.METHOD_GET, ep, _get_headers(active_prov))
 		if err != OK: continue
+		var req_start = Time.get_ticks_msec()
 		while client.get_status() == HTTPClient.STATUS_REQUESTING:
 			client.poll()
+			if (Time.get_ticks_msec() - req_start) / 1000.0 > CONNECTION_TIMEOUT_SEC:
+				client.close()
+				return {"error": "Таймаут ответа от %s" % u.host}
 			await tree.process_frame
 		response_code = client.get_response_code()
 		response_body = ""
