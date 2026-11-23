@@ -1,0 +1,151 @@
+﻿name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*' # Автозапуск при пуше тега (например v0.3.0)
+  workflow_dispatch: # Также можно запускать вручную кнопкой на GitHub
+
+permissions:
+  contents: write
+
+env:
+  GODOT_VERSION: 4.7.2 # <-- Если у тебя 4.7.0 или 4.7.1, поправь здесь
+  APP_NAME: mwai_godot
+
+jobs:
+  build-windows:
+    name: Build Windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Import project
+        run: godot --headless --import || true
+
+      - name: Export Windows
+        run: |
+          mkdir -p build/windows
+          godot --headless --export-release "Windows Desktop" "build/windows/${{ env.APP_NAME }}.exe"
+
+      - name: Pack ZIP
+        run: cd build/windows && zip -r "../../${{ env.APP_NAME }}-windows-${{ github.ref_name }}.zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-windows
+          path: ${{ env.APP_NAME }}-windows-${{ github.ref_name }}.zip
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Import project
+        run: godot --headless --import || true
+
+      - name: Export Linux
+        run: |
+          mkdir -p build/linux
+          godot --headless --export-release "Linux/X11" "build/linux/${{ env.APP_NAME }}.x86_64"
+          chmod +x "build/linux/${{ env.APP_NAME }}.x86_64"
+
+      - name: Pack ZIP
+        run: cd build/linux && zip -r "../../${{ env.APP_NAME }}-linux-${{ github.ref_name }}.zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-linux
+          path: ${{ env.APP_NAME }}-linux-${{ github.ref_name }}.zip
+
+  build-android:
+    name: Build Android (APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Godot
+        uses: chickensoft-games/setup-godot@v2
+        with:
+          version: ${{ env.GODOT_VERSION }}
+          use-dotnet: false
+          include-templates: true
+
+      - name: Import project
+        run: godot --headless --import || true
+
+      - name: Configure Android SDK & Debug Keystore
+        run: |
+          mkdir -p ~/.android ~/.config/godot
+          if [ ! -f ~/.android/debug.keystore ]; then
+            keytool -genkeypair -v -keystore ~/.android/debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          CFG="$HOME/.config/godot/editor_settings-4.7.tres"
+          if [ ! -f "$CFG" ]; then
+            printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' > "$CFG"
+          fi
+
+          sed -i '/^export\/android\/java_sdk_path/d;/^export\/android\/android_sdk_path/d;/^export\/android\/debug_keystore/d' "$CFG"
+          cat <<EOF >> "$CFG"
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+      - name: Export Android APK
+        run: |
+          mkdir -p build/android
+          godot --headless --export-debug "Android" "build/android/${{ env.APP_NAME }}-android-${{ github.ref_name }}.apk"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-android
+          path: build/android/${{ env.APP_NAME }}-android-${{ github.ref_name }}.apk
+
+  release:
+    name: Create GitHub Release
+    needs: [build-windows, build-linux, build-android]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all builds
+        uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-files/*
+          generate_release_notes: true
